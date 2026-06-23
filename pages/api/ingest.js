@@ -8,7 +8,6 @@ export const config = {
   },
 };
 
-// Limpia formatos numéricos con comas, puntos o porcentajes
 function cleanNumber(val) {
   if (!val) return 0;
   const cleaned = val.replace(/%/g, '').replace(/,/g, '').trim();
@@ -37,13 +36,17 @@ export default async function handler(req, res) {
 
     const fileBuffer = fs.readFileSync(uploadedFile.filepath);
     const pdfData = await pdf(fileBuffer);
-    const text = pdfData.text;
+    
+    // Normalizar espacios en blanco invisibles (como \u00A0 comunes en PDFs de Looker)
+    let rawText = pdfData.text || "";
+    let text = rawText.replace(/[\u00A0\u1680\u180e\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/g, ' ');
+    text = text.replace(/[ \t]+/g, ' '); // reducir espacios múltiples a uno normal
 
-    const lines = text.split('\n');
+    const lines = text.split(/\r?\n/);
     const airtableRecords = [];
 
-    // Patrón básico para identificar líneas de datos que comiencen con Fecha y Mercado
-    const DATE_MARKET_REGEX = /(\d{4}-\d{2}-\d{2})\s+([A-Z]{2,5})\s+(.+)/i;
+    // Regex permisivo para fecha (con guiones o barras) y mercado
+    const DATE_MARKET_REGEX = /(\d{4}[/-]\d{2}[/-]\d{2}|\d{2}[/-]\d{2}[/-]\d{4})\s+([A-Z]{2,5})\s+(.+)/i;
 
     for (const line of lines) {
       const trimmed = line.trim();
@@ -54,18 +57,17 @@ export default async function handler(req, res) {
         const market = dateMarketMatch[2];
         const restOfLine = dateMarketMatch[3].trim();
 
-        // Extraer todos los valores numéricos del final de la línea
+        // Extraer tokens numéricos del final
         const tokens = restOfLine.match(/[\d,.]+%?/g);
         if (!tokens || tokens.length < 3) continue;
 
-        // Reconstruir la sección de texto del medio (Show / Partido)
         const firstNumericToken = tokens[0];
         const numericIndex = restOfLine.indexOf(firstNumericToken);
         if (numericIndex === -1) continue;
 
         const middleString = restOfLine.substring(0, numericIndex).trim();
 
-        // Intentar buscar un UUID de programa
+        // Buscar UUID
         const uuidMatch = middleString.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
         
         let programId = "";
@@ -76,12 +78,10 @@ export default async function handler(req, res) {
           const parts = middleString.split(uuidMatch[0]);
           title = parts[0].trim();
         } else {
-          // Si no tiene UUID (Reportes de la Copa del Mundo), usamos el nombre del partido como ID relacional
           title = middleString;
           if (title.endsWith("FIFA World Cup")) {
             title = title.replace("FIFA World Cup", "").trim();
           }
-          // Limpiar sufijos comunes de narración de partidos
           title = title.replace(/\s*\|\s*Closs.*/gi, '')
                        .replace(/\s*\|\s*Relato.*/gi, '')
                        .trim();
@@ -89,21 +89,18 @@ export default async function handler(req, res) {
           programId = title; 
         }
 
-        // Asignar métricas de forma dinámica según la cantidad de números detectados al final
         let strAcc = 0;
         let reachPct = 0;
         let hours = 0;
 
         if (tokens.length >= 8) {
-          // Formato del PDF 1 (Sports Daily Metrics)
           strAcc = cleanNumber(tokens[tokens.length - 8]);
           reachPct = cleanNumber(tokens[tokens.length - 7]) / 100.0;
           hours = cleanNumber(tokens[tokens.length - 3]);
         } else {
-          // Formato del PDF 2 (Copa del Mundo - Partidos)
           strAcc = cleanNumber(tokens[tokens.length - 3]);
           reachPct = cleanNumber(tokens[tokens.length - 2]) / 100.0;
-          hours = 0; // Este reporte de partidos no contiene horas visualizadas individuales
+          hours = 0;
         }
 
         if (programId && date) {
@@ -122,14 +119,23 @@ export default async function handler(req, res) {
     }
 
     if (airtableRecords.length === 0) {
-      return res.status(400).json({ error: "No se encontraron filas estructuradas de shows dentro del PDF." });
+      // Si falla, tomamos las primeras 15 líneas con texto legible como diagnóstico
+      const diagnosticLines = lines
+        .map(l => l.trim())
+        .filter(l => l.length > 0)
+        .slice(0, 15)
+        .join('\n');
+
+      return res.status(400).json({ 
+        error: "No se encontraron filas estructuradas de shows dentro del PDF.",
+        debugText: diagnosticLines || "El PDF parece no contener texto extraíble."
+      });
     }
 
     const airtableBaseId = process.env.AIRTABLE_BASE_ID;
     const airtableToken = process.env.AIRTABLE_TOKEN;
     const tableName = "Metricas_Diarias";
 
-    // Enviar en lotes de 10
     for (let i = 0; i < airtableRecords.length; i += 10) {
       const chunk = airtableRecords.slice(i, i + 10);
       const url = `https://api.airtable.com/v0/${airtableBaseId}/${tableName}`;
@@ -142,13 +148,12 @@ export default async function handler(req, res) {
         },
         body: JSON.stringify({
           records: chunk,
-          typecast: true // Crea automáticamente los nuevos partidos en la tabla Metadatos_Programas
+          typecast: true
         })
       });
 
       if (!response.ok) {
         const errText = await response.text();
-        console.error(`Airtable Error: ${errText}`);
         return res.status(500).json({ error: "Error al escribir en Airtable.", details: errText });
       }
     }
