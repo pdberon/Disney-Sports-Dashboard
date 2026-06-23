@@ -14,20 +14,22 @@ function cleanNumber(val) {
   return cleaned.includes('.') ? parseFloat(cleaned) : parseInt(cleaned, 10);
 }
 
-// Función personalizada para forzar la inyección de espacios entre columnas en el PDF
+// Función de renderizado inteligente con tolerancia de 5px para reconstruir filas
 const render_page = (pageData) => {
   return pageData.getTextContent()
     .then((textContent) => {
       let lastY, text = '';
       for (let item of textContent.items) {
-        // Si el elemento está en la misma línea vertical (Y), forzamos un espacio.
-        // Si cambia de línea, añadimos un salto de línea.
-        if (lastY === item.transform[5] || !lastY) {
+        const currentY = item.transform[5];
+        
+        // Si la diferencia vertical de coordenadas Y es menor a 5 píxeles,
+        // consideramos que pertenecen a la misma fila horizontal y les inyectamos un espacio.
+        if (!lastY || Math.abs(lastY - currentY) < 5) {
           text += ' ' + item.str;
         } else {
           text += '\n' + item.str;
         }
-        lastY = item.transform[5];
+        lastY = currentY;
       }
       return text;
     });
@@ -55,12 +57,13 @@ export default async function handler(req, res) {
 
     const fileBuffer = fs.readFileSync(uploadedFile.filepath);
     
-    // Le pasamos la función de renderizado para forzar los espacios entre columnas
+    // Ejecutar pdf-parse usando el inyector de espacios por coordenadas
     const pdfData = await pdf(fileBuffer, { pagerender: render_page });
     
     let rawText = pdfData.text || "";
+    // Normalizar espacios en blanco invisibles y reducir espacios duplicados
     let text = rawText.replace(/[\u00A0\u1680\u180e\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/g, ' ');
-    text = text.replace(/[ \t]+/g, ' '); // normalizar espacios múltiples
+    text = text.replace(/[ \t]+/g, ' ');
 
     const lines = text.split(/\r?\n/);
     const airtableRecords = [];
@@ -87,12 +90,15 @@ export default async function handler(req, res) {
       if (!tokens || tokens.length < 3) continue;
 
       let firstMetricToken = tokens[tokens.length >= 8 ? tokens.length - 8 : tokens.length - 3];
-      const metricIndex = cleanLine.indexOf(firstMetricToken);
+      
+      // Corrección crítica: Buscamos el token numérico desde la derecha (lastIndexOf) 
+      // para evitar colisiones con números en el título o índice de fila.
+      const metricIndex = cleanLine.lastIndexOf(firstMetricToken);
       if (metricIndex === -1) continue;
 
       let middleString = cleanLine.substring(0, metricIndex).trim();
       
-      // Limpiar índice inicial
+      // Limpiar índice inicial de fila (ej. "1 ", "2 ")
       middleString = middleString.replace(/^\d+\s+/, '').trim();
 
       const uuidMatch = middleString.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
@@ -121,10 +127,12 @@ export default async function handler(req, res) {
       let hours = 0;
 
       if (tokens.length >= 8) {
+        // PDF 1 (Sports Daily Metrics)
         strAcc = cleanNumber(tokens[tokens.length - 8]);
         reachPct = cleanNumber(tokens[tokens.length - 7]) / 100.0;
         hours = cleanNumber(tokens[tokens.length - 3]);
       } else {
+        // PDF 2 (Copa del Mundo)
         strAcc = cleanNumber(tokens[tokens.length - 3]);
         reachPct = cleanNumber(tokens[tokens.length - 2]) / 100.0;
         hours = 0;
