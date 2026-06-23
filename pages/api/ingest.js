@@ -37,7 +37,7 @@ export default async function handler(req, res) {
     const fileBuffer = fs.readFileSync(uploadedFile.filepath);
     const pdfData = await pdf(fileBuffer);
     
-    // Normalizar espacios en blanco invisibles (como \u00A0 comunes en PDFs de Looker)
+    // Normalizar espacios en blanco invisibles (como \u00A0 de Looker)
     let rawText = pdfData.text || "";
     let text = rawText.replace(/[\u00A0\u1680\u180e\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/g, ' ');
     text = text.replace(/[ \t]+/g, ' '); // reducir espacios múltiples a uno normal
@@ -45,85 +45,102 @@ export default async function handler(req, res) {
     const lines = text.split(/\r?\n/);
     const airtableRecords = [];
 
-    // Regex permisivo para fecha (con guiones o barras) y mercado
-    const DATE_MARKET_REGEX = /(\d{4}[/-]\d{2}[/-]\d{2}|\d{2}[/-]\d{2}[/-]\d{4})\s+([A-Z]{2,5})\s+(.+)/i;
+    // Buscador súper flexible de países/mercados en las filas de datos
+    const COUNTRY_REGEX = /\b(LATAM|CENAM|AR|BR|CL|CO|MX|EC|PE|UY|VE)\b/i;
 
     for (const line of lines) {
       const trimmed = line.trim();
-      const dateMarketMatch = trimmed.match(DATE_MARKET_REGEX);
       
-      if (dateMarketMatch) {
-        const date = dateMarketMatch[1];
-        const market = dateMarketMatch[2];
-        const restOfLine = dateMarketMatch[3].trim();
+      // 1. Validar que la línea tenga una fecha en formato YYYY-MM-DD o DD-MM-YYYY
+      const dateMatch = trimmed.match(/(\d{4}[/-]\d{2}[/-]\d{2}|\d{2}[/-]\d{2}[/-]\d{4})/);
+      if (!dateMatch) continue;
+      const date = dateMatch[1];
 
-        // Extraer tokens numéricos del final
-        const tokens = restOfLine.match(/[\d,.]+%?/g);
-        if (!tokens || tokens.length < 3) continue;
+      // 2. Validar que la línea contenga un código de mercado válido
+      const countryMatch = trimmed.match(COUNTRY_REGEX);
+      if (!countryMatch) continue;
+      const market = countryMatch[1].toUpperCase();
 
-        const firstNumericToken = tokens[0];
-        const numericIndex = restOfLine.indexOf(firstNumericToken);
-        if (numericIndex === -1) continue;
+      // 3. Limpiar la línea quitando la fecha y el código de país para procesar el resto
+      let lineWithoutDate = trimmed.replace(date, '').trim();
+      const countryRegex = new RegExp(`\\b${market}\\b`, 'i');
+      let cleanLine = lineWithoutDate.replace(countryRegex, '').trim();
 
-        const middleString = restOfLine.substring(0, numericIndex).trim();
+      // 4. Extraer todos los números al final de la línea
+      const tokens = cleanLine.match(/[\d,.]+%?/g);
+      // Una línea de datos real debe tener al menos 3 números (por ej. Streaming Accounts, Reach% y FS/Hours)
+      if (!tokens || tokens.length < 3) continue;
 
-        // Buscar UUID
-        const uuidMatch = middleString.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
+      // 5. Determinar el inicio de las métricas numéricas para aislar el nombre del programa/partido
+      // Para métricas diarias (tokens.length >= 8) o Copa del Mundo (tokens.length < 8)
+      let firstMetricToken = tokens[tokens.length >= 8 ? tokens.length - 8 : tokens.length - 3];
+      const metricIndex = cleanLine.indexOf(firstMetricToken);
+      if (metricIndex === -1) continue;
+
+      let middleString = cleanLine.substring(0, metricIndex).trim();
+      
+      // Limpiar índice numérico residual al inicio (ej. "1 ")
+      middleString = middleString.replace(/^\d+\s+/, '').trim();
+
+      // 6. Extraer UUID si existe (PDF 1) o usar el nombre del partido como ID (PDF 2)
+      const uuidMatch = middleString.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
+      
+      let programId = "";
+      let title = "";
+
+      if (uuidMatch) {
+        programId = uuidMatch[1];
+        const parts = middleString.split(uuidMatch[0]);
+        title = parts[0].trim();
+      } else {
+        title = middleString;
+        if (title.endsWith("FIFA World Cup")) {
+          title = title.replace("FIFA World Cup", "").trim();
+        }
+        // Limpiamos leyendas de narración para el Mundial
+        title = title.replace(/\s*\|\s*Closs.*/gi, '')
+                     .replace(/\s*\|\s*Relato.*/gi, '')
+                     .trim();
         
-        let programId = "";
-        let title = "";
+        programId = title; 
+      }
 
-        if (uuidMatch) {
-          programId = uuidMatch[1];
-          const parts = middleString.split(uuidMatch[0]);
-          title = parts[0].trim();
-        } else {
-          title = middleString;
-          if (title.endsWith("FIFA World Cup")) {
-            title = title.replace("FIFA World Cup", "").trim();
+      // 7. Mapear métricas
+      let strAcc = 0;
+      let reachPct = 0;
+      let hours = 0;
+
+      if (tokens.length >= 8) {
+        // PDF 1 (Sports Daily Metrics)
+        strAcc = cleanNumber(tokens[tokens.length - 8]);
+        reachPct = cleanNumber(tokens[tokens.length - 7]) / 100.0;
+        hours = cleanNumber(tokens[tokens.length - 3]);
+      } else {
+        // PDF 2 (Copa del Mundo)
+        strAcc = cleanNumber(tokens[tokens.length - 3]);
+        reachPct = cleanNumber(tokens[tokens.length - 2]) / 100.0;
+        hours = 0; // El PDF de partidos no incluye horas por fila
+      }
+
+      if (programId && date) {
+        airtableRecords.push({
+          fields: {
+            "Date": date,
+            "Market": market,
+            "PROGRAMID": [programId],
+            "Streaming_Accounts": strAcc,
+            "Hours_Streamed": hours,
+            "Reach_Percent": reachPct
           }
-          title = title.replace(/\s*\|\s*Closs.*/gi, '')
-                       .replace(/\s*\|\s*Relato.*/gi, '')
-                       .trim();
-          
-          programId = title; 
-        }
-
-        let strAcc = 0;
-        let reachPct = 0;
-        let hours = 0;
-
-        if (tokens.length >= 8) {
-          strAcc = cleanNumber(tokens[tokens.length - 8]);
-          reachPct = cleanNumber(tokens[tokens.length - 7]) / 100.0;
-          hours = cleanNumber(tokens[tokens.length - 3]);
-        } else {
-          strAcc = cleanNumber(tokens[tokens.length - 3]);
-          reachPct = cleanNumber(tokens[tokens.length - 2]) / 100.0;
-          hours = 0;
-        }
-
-        if (programId && date) {
-          airtableRecords.push({
-            fields: {
-              "Date": date,
-              "Market": market,
-              "PROGRAMID": [programId],
-              "Streaming_Accounts": strAcc,
-              "Hours_Streamed": hours,
-              "Reach_Percent": reachPct
-            }
-          });
-        }
+        });
       }
     }
 
     if (airtableRecords.length === 0) {
-      // Si falla, tomamos las primeras 15 líneas con texto legible como diagnóstico
       const diagnosticLines = lines
         .map(l => l.trim())
         .filter(l => l.length > 0)
-        .slice(0, 15)
+        .slice(0, 25)
         .join('\n');
 
       return res.status(400).json({ 
