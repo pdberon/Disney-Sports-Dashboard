@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import Head from 'next/head';
 
-export async function getStaticProps() {
+// Cambia "getStaticProps" por "getServerSideProps"
+export async function getServerSideProps() {
   const baseId = process.env.AIRTABLE_BASE_ID;
   const tableName = "Metricas_Diarias";
   const url = `https://api.airtable.com/v0/${baseId}/${tableName}?maxRecords=100&view=Grid%20view`;
@@ -19,8 +20,6 @@ export async function getStaticProps() {
 
     const rawData = await res.json();
 
-    // Mapeamos los datos de Airtable.
-    // Los campos del show mapeados por relación ('PROGRAM_FULL_TITLE', etc.) son devueltos por la API de Airtable como arrays.
     const metrics = rawData.records.map(record => ({
       id: record.id,
       fecha: record.fields.Date || "Sin fecha",
@@ -36,17 +35,15 @@ export async function getStaticProps() {
     return {
       props: {
         metrics,
-      },
-      // Revalida y actualiza los datos del servidor de manera estática cada 1 hora
-      revalidate: 3600,
+      }
+      // Nota: Eliminamos la línea "revalidate: 3600" ya que no es necesaria en getServerSideProps
     };
   } catch (error) {
-    console.error("Error al obtener datos en Build Time:", error);
+    console.error("Error al obtener datos en ServerSide:", error);
     return {
       props: {
         metrics: [],
-      },
-      revalidate: 10, // Reintento rápido si falla
+      }
     };
   }
 }
