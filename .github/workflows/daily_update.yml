@@ -1,0 +1,28 @@
+name: Actualización Diaria a Airtable
+
+on:
+  schedule:
+    - cron: '0 5 * * *' # Se ejecuta a las 5:00 AM UTC todos los días
+  workflow_dispatch: # Esto nos permite ejecutarlo manualmente cuando queramos
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v3
+
+    - name: Configurar Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Instalar dependencias
+      run: |
+        pip install pandas requests pdfplumber
+
+    - name: Procesar y enviar a Airtable
+      env:
+        AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+        AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+      run: python process_data.py
