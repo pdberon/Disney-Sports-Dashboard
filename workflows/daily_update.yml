@@ -19,7 +19,7 @@ jobs:
 
     - name: Instalar dependencias
       run: |
-        pip install pandas requests
+        pip install pandas requests pdfplumber
 
     - name: Procesar y enviar a Airtable
       env:
