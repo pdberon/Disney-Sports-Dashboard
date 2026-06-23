@@ -2,13 +2,14 @@ import formidable from 'formidable';
 import fs from 'fs';
 import pdf from 'pdf-parse';
 
-// Desactivamos el bodyParser automático de Next.js para permitir que formidable controle el flujo del archivo
+// Desactivamos el parser interno de Next.js para permitir que formidable procese el multipart/form-data
 export const config = {
   api: {
     bodyParser: false,
   },
 };
 
+// Regex para mapear filas del PDF de Looker que contienen UUIDs de shows de deportes
 const ROW_REGEX = /(?:\d+\s+)?(\d{4}-\d{2}-\d{2})\s+([A-Z]{2,5})\s+(.*?)\s+([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\s+(.*?)\s+([\d,.]+)\s+([\d,.]+%?)\s+(?:[\d,.]+\s+){3}([\d,.]+)\s+([\d,.]+%?)\s+([\d,.]+)/i;
 
 function cleanNumber(val) {
@@ -25,7 +26,7 @@ export default async function handler(req, res) {
   try {
     const form = formidable({ multiples: false });
     
-    // Parsear el archivo del formulario
+    // Parsear el archivo temporal cargado
     const { files } = await new Promise((resolve, reject) => {
       form.parse(req, (err, fields, files) => {
         if (err) reject(err);
@@ -33,13 +34,12 @@ export default async function handler(req, res) {
       });
     });
 
-    // Validar el archivo subido
     const uploadedFile = Array.isArray(files.file) ? files.file[0] : files.file;
     if (!uploadedFile) {
       return res.status(400).json({ error: "No se seleccionó ningún archivo." });
     }
 
-    // Leer el archivo en memoria y extraer el texto
+    // Cargar buffer del archivo y extraer el texto del PDF
     const fileBuffer = fs.readFileSync(uploadedFile.filepath);
     const pdfData = await pdf(fileBuffer);
     const text = pdfData.text;
@@ -62,7 +62,7 @@ export default async function handler(req, res) {
           fields: {
             "Date": date,
             "Market": market,
-            "PROGRAMID": [programId], // Enlace relacional en Airtable (debe ir como array)
+            "PROGRAMID": [programId], // Enlaza directamente usando la relación de Airtable
             "Streaming_Accounts": strAcc,
             "Hours_Streamed": hours,
             "Reach_Percent": reachPct
@@ -72,15 +72,14 @@ export default async function handler(req, res) {
     }
 
     if (airtableRecords.length === 0) {
-      return res.status(400).json({ error: "No se encontraron filas de shows válidas en el PDF." });
+      return res.status(400).json({ error: "No se encontraron filas estructuradas de shows dentro del PDF." });
     }
 
-    // Configuración de Airtable desde variables de entorno
     const airtableBaseId = process.env.AIRTABLE_BASE_ID;
     const airtableToken = process.env.AIRTABLE_TOKEN;
     const tableName = "Metricas_Diarias";
 
-    // Enviar a Airtable en lotes de máximo 10 registros
+    // Subir registros a Airtable en lotes de 10
     for (let i = 0; i < airtableRecords.length; i += 10) {
       const chunk = airtableRecords.slice(i, i + 10);
       const url = `https://api.airtable.com/v0/${airtableBaseId}/${tableName}`;
@@ -93,21 +92,21 @@ export default async function handler(req, res) {
         },
         body: JSON.stringify({
           records: chunk,
-          typecast: true // Permite que Airtable resuelva los IDs de texto vinculándolos
+          typecast: true // Vincula automáticamente el ID con la tabla "Metadatos_Programas"
         })
       });
 
       if (!response.ok) {
         const errText = await response.text();
-        console.error(`Error en Airtable: ${errText}`);
-        return res.status(500).json({ error: "Fallo al escribir en Airtable.", details: errText });
+        console.error(`Airtable Error: ${errText}`);
+        return res.status(500).json({ error: "Error al escribir datos en Airtable.", details: errText });
       }
     }
 
     return res.status(200).json({ status: "success", count: airtableRecords.length });
 
   } catch (error) {
-    console.error("Error del servidor:", error);
-    return res.status(500).json({ error: "Error interno al procesar el archivo.", details: error.message });
+    console.error("Internal Server Error:", error);
+    return res.status(500).json({ error: "Error interno durante la lectura del PDF.", details: error.message });
   }
 }
