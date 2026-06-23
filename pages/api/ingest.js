@@ -14,6 +14,25 @@ function cleanNumber(val) {
   return cleaned.includes('.') ? parseFloat(cleaned) : parseInt(cleaned, 10);
 }
 
+// Función personalizada para forzar la inyección de espacios entre columnas en el PDF
+const render_page = (pageData) => {
+  return pageData.getTextContent()
+    .then((textContent) => {
+      let lastY, text = '';
+      for (let item of textContent.items) {
+        // Si el elemento está en la misma línea vertical (Y), forzamos un espacio.
+        // Si cambia de línea, añadimos un salto de línea.
+        if (lastY === item.transform[5] || !lastY) {
+          text += ' ' + item.str;
+        } else {
+          text += '\n' + item.str;
+        }
+        lastY = item.transform[5];
+      }
+      return text;
+    });
+};
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Método no permitido. Use POST.' });
@@ -35,54 +54,47 @@ export default async function handler(req, res) {
     }
 
     const fileBuffer = fs.readFileSync(uploadedFile.filepath);
-    const pdfData = await pdf(fileBuffer);
     
-    // Normalizar espacios en blanco invisibles (como \u00A0 de Looker)
+    // Le pasamos la función de renderizado para forzar los espacios entre columnas
+    const pdfData = await pdf(fileBuffer, { pagerender: render_page });
+    
     let rawText = pdfData.text || "";
     let text = rawText.replace(/[\u00A0\u1680\u180e\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/g, ' ');
-    text = text.replace(/[ \t]+/g, ' '); // reducir espacios múltiples a uno normal
+    text = text.replace(/[ \t]+/g, ' '); // normalizar espacios múltiples
 
     const lines = text.split(/\r?\n/);
     const airtableRecords = [];
 
-    // Buscador súper flexible de países/mercados en las filas de datos
-    const COUNTRY_REGEX = /\b(LATAM|CENAM|AR|BR|CL|CO|MX|EC|PE|UY|VE)\b/i;
+    const DATE_REGEX = /(\d{4}[/-]\d{2}[/-]\d{2}|\d{2}[/-]\d{2}[/-]\d{4})/;
+    const MARKET_REGEX = /\b(LATAM|CENAM|AR|BR|CL|CO|MX|EC|PE|UY|VE)\b/i;
 
     for (const line of lines) {
       const trimmed = line.trim();
       
-      // 1. Validar que la línea tenga una fecha en formato YYYY-MM-DD o DD-MM-YYYY
-      const dateMatch = trimmed.match(/(\d{4}[/-]\d{2}[/-]\d{2}|\d{2}[/-]\d{2}[/-]\d{4})/);
+      const dateMatch = trimmed.match(DATE_REGEX);
       if (!dateMatch) continue;
       const date = dateMatch[1];
 
-      // 2. Validar que la línea contenga un código de mercado válido
-      const countryMatch = trimmed.match(COUNTRY_REGEX);
+      const countryMatch = trimmed.match(MARKET_REGEX);
       if (!countryMatch) continue;
       const market = countryMatch[1].toUpperCase();
 
-      // 3. Limpiar la línea quitando la fecha y el código de país para procesar el resto
       let lineWithoutDate = trimmed.replace(date, '').trim();
       const countryRegex = new RegExp(`\\b${market}\\b`, 'i');
       let cleanLine = lineWithoutDate.replace(countryRegex, '').trim();
 
-      // 4. Extraer todos los números al final de la línea
       const tokens = cleanLine.match(/[\d,.]+%?/g);
-      // Una línea de datos real debe tener al menos 3 números (por ej. Streaming Accounts, Reach% y FS/Hours)
       if (!tokens || tokens.length < 3) continue;
 
-      // 5. Determinar el inicio de las métricas numéricas para aislar el nombre del programa/partido
-      // Para métricas diarias (tokens.length >= 8) o Copa del Mundo (tokens.length < 8)
       let firstMetricToken = tokens[tokens.length >= 8 ? tokens.length - 8 : tokens.length - 3];
       const metricIndex = cleanLine.indexOf(firstMetricToken);
       if (metricIndex === -1) continue;
 
       let middleString = cleanLine.substring(0, metricIndex).trim();
       
-      // Limpiar índice numérico residual al inicio (ej. "1 ")
+      // Limpiar índice inicial
       middleString = middleString.replace(/^\d+\s+/, '').trim();
 
-      // 6. Extraer UUID si existe (PDF 1) o usar el nombre del partido como ID (PDF 2)
       const uuidMatch = middleString.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
       
       let programId = "";
@@ -97,7 +109,6 @@ export default async function handler(req, res) {
         if (title.endsWith("FIFA World Cup")) {
           title = title.replace("FIFA World Cup", "").trim();
         }
-        // Limpiamos leyendas de narración para el Mundial
         title = title.replace(/\s*\|\s*Closs.*/gi, '')
                      .replace(/\s*\|\s*Relato.*/gi, '')
                      .trim();
@@ -105,21 +116,18 @@ export default async function handler(req, res) {
         programId = title; 
       }
 
-      // 7. Mapear métricas
       let strAcc = 0;
       let reachPct = 0;
       let hours = 0;
 
       if (tokens.length >= 8) {
-        // PDF 1 (Sports Daily Metrics)
         strAcc = cleanNumber(tokens[tokens.length - 8]);
         reachPct = cleanNumber(tokens[tokens.length - 7]) / 100.0;
         hours = cleanNumber(tokens[tokens.length - 3]);
       } else {
-        // PDF 2 (Copa del Mundo)
         strAcc = cleanNumber(tokens[tokens.length - 3]);
         reachPct = cleanNumber(tokens[tokens.length - 2]) / 100.0;
-        hours = 0; // El PDF de partidos no incluye horas por fila
+        hours = 0;
       }
 
       if (programId && date) {
