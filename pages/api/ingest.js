@@ -2,16 +2,13 @@ import formidable from 'formidable';
 import fs from 'fs';
 import pdf from 'pdf-parse';
 
-// Desactivamos el parser interno de Next.js para permitir que formidable procese el multipart/form-data
 export const config = {
   api: {
     bodyParser: false,
   },
 };
 
-// Regex para mapear filas del PDF de Looker que contienen UUIDs de shows de deportes
-const ROW_REGEX = /(?:\d+\s+)?(\d{4}-\d{2}-\d{2})\s+([A-Z]{2,5})\s+(.*?)\s+([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\s+(.*?)\s+([\d,.]+)\s+([\d,.]+%?)\s+(?:[\d,.]+\s+){3}([\d,.]+)\s+([\d,.]+%?)\s+([\d,.]+)/i;
-
+// Limpia formatos numéricos con comas, puntos o porcentajes
 function cleanNumber(val) {
   if (!val) return 0;
   const cleaned = val.replace(/%/g, '').replace(/,/g, '').trim();
@@ -26,7 +23,6 @@ export default async function handler(req, res) {
   try {
     const form = formidable({ multiples: false });
     
-    // Parsear el archivo temporal cargado
     const { files } = await new Promise((resolve, reject) => {
       form.parse(req, (err, fields, files) => {
         if (err) reject(err);
@@ -39,35 +35,89 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "No se seleccionó ningún archivo." });
     }
 
-    // Cargar buffer del archivo y extraer el texto del PDF
     const fileBuffer = fs.readFileSync(uploadedFile.filepath);
     const pdfData = await pdf(fileBuffer);
     const text = pdfData.text;
 
-    // Procesar texto línea por línea
     const lines = text.split('\n');
     const airtableRecords = [];
 
-    for (const line of lines) {
-      const match = line.trim().match(ROW_REGEX);
-      if (match) {
-        const date = match[1];
-        const market = match[2];
-        const programId = match[4];
-        const strAcc = cleanNumber(match[6]);
-        const reachPct = cleanNumber(match[7]) / 100.0;
-        const hours = cleanNumber(match[8]);
+    // Patrón básico para identificar líneas de datos que comiencen con Fecha y Mercado
+    const DATE_MARKET_REGEX = /(\d{4}-\d{2}-\d{2})\s+([A-Z]{2,5})\s+(.+)/i;
 
-        airtableRecords.push({
-          fields: {
-            "Date": date,
-            "Market": market,
-            "PROGRAMID": [programId], // Enlaza directamente usando la relación de Airtable
-            "Streaming_Accounts": strAcc,
-            "Hours_Streamed": hours,
-            "Reach_Percent": reachPct
+    for (const line of lines) {
+      const trimmed = line.trim();
+      const dateMarketMatch = trimmed.match(DATE_MARKET_REGEX);
+      
+      if (dateMarketMatch) {
+        const date = dateMarketMatch[1];
+        const market = dateMarketMatch[2];
+        const restOfLine = dateMarketMatch[3].trim();
+
+        // Extraer todos los valores numéricos del final de la línea
+        const tokens = restOfLine.match(/[\d,.]+%?/g);
+        if (!tokens || tokens.length < 3) continue;
+
+        // Reconstruir la sección de texto del medio (Show / Partido)
+        const firstNumericToken = tokens[0];
+        const numericIndex = restOfLine.indexOf(firstNumericToken);
+        if (numericIndex === -1) continue;
+
+        const middleString = restOfLine.substring(0, numericIndex).trim();
+
+        // Intentar buscar un UUID de programa
+        const uuidMatch = middleString.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
+        
+        let programId = "";
+        let title = "";
+
+        if (uuidMatch) {
+          programId = uuidMatch[1];
+          const parts = middleString.split(uuidMatch[0]);
+          title = parts[0].trim();
+        } else {
+          // Si no tiene UUID (Reportes de la Copa del Mundo), usamos el nombre del partido como ID relacional
+          title = middleString;
+          if (title.endsWith("FIFA World Cup")) {
+            title = title.replace("FIFA World Cup", "").trim();
           }
-        });
+          // Limpiar sufijos comunes de narración de partidos
+          title = title.replace(/\s*\|\s*Closs.*/gi, '')
+                       .replace(/\s*\|\s*Relato.*/gi, '')
+                       .trim();
+          
+          programId = title; 
+        }
+
+        // Asignar métricas de forma dinámica según la cantidad de números detectados al final
+        let strAcc = 0;
+        let reachPct = 0;
+        let hours = 0;
+
+        if (tokens.length >= 8) {
+          // Formato del PDF 1 (Sports Daily Metrics)
+          strAcc = cleanNumber(tokens[tokens.length - 8]);
+          reachPct = cleanNumber(tokens[tokens.length - 7]) / 100.0;
+          hours = cleanNumber(tokens[tokens.length - 3]);
+        } else {
+          // Formato del PDF 2 (Copa del Mundo - Partidos)
+          strAcc = cleanNumber(tokens[tokens.length - 3]);
+          reachPct = cleanNumber(tokens[tokens.length - 2]) / 100.0;
+          hours = 0; // Este reporte de partidos no contiene horas visualizadas individuales
+        }
+
+        if (programId && date) {
+          airtableRecords.push({
+            fields: {
+              "Date": date,
+              "Market": market,
+              "PROGRAMID": [programId],
+              "Streaming_Accounts": strAcc,
+              "Hours_Streamed": hours,
+              "Reach_Percent": reachPct
+            }
+          });
+        }
       }
     }
 
@@ -79,7 +129,7 @@ export default async function handler(req, res) {
     const airtableToken = process.env.AIRTABLE_TOKEN;
     const tableName = "Metricas_Diarias";
 
-    // Subir registros a Airtable en lotes de 10
+    // Enviar en lotes de 10
     for (let i = 0; i < airtableRecords.length; i += 10) {
       const chunk = airtableRecords.slice(i, i + 10);
       const url = `https://api.airtable.com/v0/${airtableBaseId}/${tableName}`;
@@ -92,14 +142,14 @@ export default async function handler(req, res) {
         },
         body: JSON.stringify({
           records: chunk,
-          typecast: true // Vincula automáticamente el ID con la tabla "Metadatos_Programas"
+          typecast: true // Crea automáticamente los nuevos partidos en la tabla Metadatos_Programas
         })
       });
 
       if (!response.ok) {
         const errText = await response.text();
         console.error(`Airtable Error: ${errText}`);
-        return res.status(500).json({ error: "Error al escribir datos en Airtable.", details: errText });
+        return res.status(500).json({ error: "Error al escribir en Airtable.", details: errText });
       }
     }
 
