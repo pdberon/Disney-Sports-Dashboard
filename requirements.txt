@@ -1,3 +1,0 @@
-pdfplumber
-requests
-pandas
