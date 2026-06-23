@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import Head from 'next/head';
 
-// Cambia "getStaticProps" por "getServerSideProps"
 export async function getServerSideProps() {
   const baseId = process.env.AIRTABLE_BASE_ID;
   const tableName = "Metricas_Diarias";
@@ -36,7 +35,6 @@ export async function getServerSideProps() {
       props: {
         metrics,
       }
-      // Nota: Eliminamos la línea "revalidate: 3600" ya que no es necesaria en getServerSideProps
     };
   } catch (error) {
     console.error("Error al obtener datos en ServerSide:", error);
@@ -59,6 +57,8 @@ export default function Home({ metrics }) {
     <div className="min-h-screen bg-slate-50 py-10 px-6 sm:px-8 font-sans">
       <Head>
         <title>Disney+ Sports Analytics</title>
+        {/* Cargador directo de Tailwind para asegurar el diseño */}
+        <script src="https://cdn.tailwindcss.com"></script>
       </Head>
 
       <div className="max-w-7xl mx-auto">
@@ -76,63 +76,50 @@ export default function Home({ metrics }) {
               className="bg-white border border-slate-300 rounded-lg p-2 text-sm text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               <option value="All">Todos los Mercados</option>
-              <option value="LATAM">LATAM (General)</option>
+              <option value="AR">Argentina</option>
               <option value="BR">Brasil</option>
               <option value="MX">México</option>
-              <option value="AR">Argentina</option>
               <option value="CL">Chile</option>
               <option value="CO">Colombia</option>
-              <option value="CENAM">Centroamérica</option>
             </select>
           </div>
         </header>
 
-        {/* Tabla de Rendimiento de Shows */}
-        <main className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-          <div className="p-6 border-b border-slate-100">
-            <h2 className="text-lg font-bold text-slate-800">Detalle de Shows de Deportes</h2>
-            <p className="text-xs text-slate-400 mt-1">Lista detallada procesada y vinculada desde Airtable.</p>
+        {/* Tabla Detallada */}
+        <div className="mt-6 bg-white shadow rounded-lg overflow-hidden border border-slate-200">
+          <div className="p-6 border-b border-slate-200 bg-slate-50">
+            <h2 className="text-lg font-bold text-slate-800">Detalle Diario Cruzado</h2>
+            <p className="text-slate-500 text-xs mt-1">Lista detallada procesada y vinculada desde Airtable.</p>
           </div>
-
           <div className="overflow-x-auto">
-            {filteredMetrics.length === 0 ? (
-              <div className="p-10 text-center text-slate-500 text-sm">
-                No hay registros disponibles para mostrar. Sube datos desde la sección de administración.
-              </div>
-            ) : (
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-slate-50 text-slate-500 text-xs font-semibold uppercase tracking-wider border-b border-slate-200">
-                    <th className="p-4">Fecha</th>
-                    <th className="p-4">Mercado</th>
-                    <th className="p-4">Programa / Show</th>
-                    <th className="p-4">Liga</th>
-                    <th className="p-4 text-right">Cuentas Únicas</th>
-                    <th className="p-4 text-right">Horas Visualizadas</th>
-                    <th className="p-4 text-right">Reach %</th>
+            <table className="min-w-full divide-y divide-slate-200">
+              <thead className="bg-slate-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Fecha</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Mercado</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Programa / Show / Partido</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Liga</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Cuentas Únicas</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Horas Visualizadas</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">Reach %</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-slate-200">
+                {filteredMetrics.map((item, idx) => (
+                  <tr key={idx} className="hover:bg-slate-50 transition-colors">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-900">{item.fecha}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-900 font-bold">{item.mercado}</td>
+                    <td className="px-6 py-4 text-sm text-slate-900 font-medium">{item.programa}</td>
+                    <td className="px-6 py-4 text-sm text-slate-500">{item.liga}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-900 font-mono text-right">{item.streaming_accounts.toLocaleString()}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-900 font-mono text-right">{item.hours_streamed.toLocaleString(undefined, { minimumFractionDigits: 1 })}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-900 font-mono text-right">{(item.reach_pct * 100).toFixed(1)}%</td>
                   </tr>
-                </thead>
-                <tbody className="text-slate-700 text-sm divide-y divide-slate-100">
-                  {filteredMetrics.map((item) => (
-                    <tr key={item.id} className="hover:bg-slate-50/50 transition">
-                      <td className="p-4 font-medium text-slate-900">{item.fecha}</td>
-                      <td className="p-4">
-                        <span className="bg-slate-100 text-slate-800 text-xs font-semibold px-2.5 py-0.5 rounded">
-                          {item.mercado}
-                        </span>
-                      </td>
-                      <td className="p-4 font-medium text-slate-900">{item.programa}</td>
-                      <td className="p-4 text-slate-500">{item.liga}</td>
-                      <td className="p-4 text-right font-mono">{item.streaming_accounts.toLocaleString()}</td>
-                      <td className="p-4 text-right font-mono">{item.hours_streamed.toLocaleString(undefined, { minimumFractionDigits: 1 })}</td>
-                      <td className="p-4 text-right font-mono">{(item.reach_pct * 100).toFixed(1)}%</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
+                ))}
+              </tbody>
+            </table>
           </div>
-        </main>
+        </div>
       </div>
     </div>
   );
