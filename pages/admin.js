@@ -5,6 +5,7 @@ export default function Admin() {
   const [file, setFile] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState('');
+  const [debugText, setDebugText] = useState('');
 
   const onSubmit = async (e) => {
     e.preventDefault();
@@ -15,6 +16,7 @@ export default function Admin() {
 
     setIsLoading(true);
     setMessage('');
+    setDebugText('');
 
     const formData = new FormData();
     formData.append("file", file);
@@ -31,6 +33,9 @@ export default function Admin() {
         setFile(null);
       } else {
         setMessage(`Error: ${result.error || 'No se pudo procesar el archivo.'}`);
+        if (result.debugText) {
+          setDebugText(result.debugText);
+        }
       }
     } catch (error) {
       setMessage(`Error de conexión: ${error.message}`);
@@ -45,7 +50,7 @@ export default function Admin() {
         <title>Ingesta de Métricas - Dashboard</title>
       </Head>
 
-      <div className="max-w-md w-full mx-auto bg-white p-8 rounded-2xl shadow-md border border-slate-100">
+      <div className="max-w-xl w-full mx-auto bg-white p-8 rounded-2xl shadow-md border border-slate-100">
         <h1 className="text-2xl font-bold mb-2 text-slate-800">Panel de Ingesta Diaria</h1>
         <p className="text-slate-500 mb-6 text-sm">
           Sube el PDF diario para procesar las métricas de deportes e ingresarlas automáticamente en tu base de datos de Airtable.
@@ -57,17 +62,9 @@ export default function Admin() {
               type="file"
               accept=".pdf"
               onChange={(e) => setFile(e.target.files[0])}
-              className="hidden"
+              className="bg-white p-2 w-full text-sm border rounded cursor-pointer"
               id="pdf-upload"
             />
-            <label htmlFor="pdf-upload" className="cursor-pointer block">
-              <span className="text-blue-600 hover:text-blue-800 font-semibold text-sm block">
-                {file ? `Archivo: ${file.name}` : "Selecciona el PDF diario de Looker"}
-              </span>
-              <span className="block text-xs text-slate-400 mt-2">
-                Asegúrate de que contenga datos vectoriales de texto
-              </span>
-            </label>
           </div>
 
           <button
@@ -86,6 +83,15 @@ export default function Admin() {
               : 'bg-rose-50 text-rose-800 border-rose-200'
           }`}>
             {message}
+          </div>
+        )}
+
+        {debugText && (
+          <div className="mt-6 p-4 bg-slate-900 text-slate-100 rounded-lg text-xs font-mono overflow-x-auto border border-slate-800">
+            <h3 className="font-bold text-slate-400 mb-2 uppercase tracking-wide">
+              Texto extraído para diagnóstico (Primeras líneas):
+            </h3>
+            <pre className="whitespace-pre-wrap">{debugText}</pre>
           </div>
         )}
       </div>
