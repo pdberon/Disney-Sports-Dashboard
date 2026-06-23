@@ -1,12 +1,40 @@
 import os
 import glob
-import pandas as pd
+import re
+import pdfplumber
 import requests
 
-# Configuración desde variables de entorno (por seguridad)
+# Configuración de Airtable
 AIRTABLE_TOKEN = os.environ.get("AIRTABLE_TOKEN")
 BASE_ID = os.environ.get("AIRTABLE_BASE_ID")
 TABLE_NAME = "Metricas_Diarias"
+
+# Expresión regular para detectar filas con UUIDs de programas en el PDF
+# Detecta: Fecha, Mercado, Título del Show, UUID (PROGRAMID), Liga y las métricas numéricas asociadas.
+ROW_REGEX = re.compile(
+    r"(?:\d+\s+)?"                      # Número de fila (opcional)
+    r"(\d{4}-\d{2}-\d{2})\s+"           # 1. Fecha (YYYY-MM-DD)
+    r"([A-Z]{2,5})\s+"                  # 2. Mercado (LATAM, BR, MX, etc.)
+    r"(.*?)\s+"                         # 3. Título del show
+    r"([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\s+" # 4. UUID / PROGRAMID
+    r"(.*?)\s+"                         # 5. Liga
+    r"([\d,.]+)\s+"                     # 6. Streaming Accounts (L1 Str. Acc)
+    r"([\d,.]+%?)\s+"                   # 7. Reach%
+    r"[\d,.]+\s+[\d,.]+\s+[\d,.]+\s+"   # Salta: Total FS, New FS, Reconnected FS
+    r"([\d,.]+)\s+"                     # 8. L1 Hours
+    r"([\d,.]+%?)\s+"                   # 9. Watch%
+    r"[\d,.]+"                          # Salta HPS
+)
+
+def clean_number(val):
+    """Limpia formatos numéricos con comas o símbolos de porcentaje."""
+    if not val:
+        return 0
+    val = val.replace("%", "").replace(",", "")
+    try:
+        return float(val) if "." in val else int(val)
+    except ValueError:
+        return 0
 
 def upload_to_airtable(records):
     url = f"https://api.airtable.com/v0/{BASE_ID}/{TABLE_NAME}"
@@ -15,48 +43,59 @@ def upload_to_airtable(records):
         "Content-Type": "application/json"
     }
     
-    # La API de Airtable permite subir hasta 10 registros por petición
     for i in range(0, len(records), 10):
         chunk = records[i:i+10]
         payload = {
             "records": [{"fields": record} for record in chunk],
-            "typecast": True  # Permite que Airtable vincule automáticamente los IDs de texto a la otra tabla
+            "typecast": True  # Airtable vinculará el PROGRAMID a la otra tabla automáticamente
         }
-        
         response = requests.post(url, json=payload, headers=headers)
         if response.status_code != 200:
-            print(f"Error al subir lote: {response.text}")
+            print(f"Error al subir lote a Airtable: {response.text}")
         else:
-            print(f"Lote de {len(chunk)} registros subido correctamente.")
+            print(f"Se cargaron {len(chunk)} registros de shows correctamente.")
 
-def process_daily_data():
-    # Buscamos los archivos descargados hoy en la carpeta temporal 'raw_data'
-    all_daily_files = glob.glob('raw_data/*.csv')
-    
+def process_pdf_files():
+    # Buscamos todos los PDFs en la carpeta 'raw_data'
+    pdf_files = glob.glob('raw_data/*.pdf')
     airtable_records = []
     
-    for file in all_daily_files:
-        daily_df = pd.read_csv(file)
-        
-        for _, row in daily_df.iterrows():
-            # Construimos el registro para Airtable
-            record = {
-                "Date": row.get("Business Date"),
-                "Market": row.get("Market"),
-                # Pasamos el ID para que Airtable lo enlace automáticamente en la relación
-                "PROGRAMID": [row.get("ID (Key Metric for PGM Code)")], 
-                "Streaming_Accounts": int(row.get("L1 Str. Acc.", 0)),
-                "Hours_Streamed": float(row.get("L1 Hours", 0)),
-                "Reach_Percent": float(row.get("L1 Reach%", 0.0))
-            }
-            # Evitamos registros vacíos sin fecha o programa
-            if record["Date"] and record["PROGRAMID"][0]:
-                airtable_records.append(record)
+    for pdf_path in pdf_files:
+        print(f"Procesando archivo PDF: {pdf_path}")
+        with pdfplumber.open(pdf_path) as pdf:
+            for page_num, page in enumerate(pdf.pages, start=1):
+                text = page.extract_text()
+                if not text:
+                    continue
                 
+                # Procesamos línea por línea el texto extraído
+                for line in text.split("\n"):
+                    match = ROW_REGEX.search(line.strip())
+                    if match:
+                        date = match.group(1)
+                        market = match.group(2)
+                        program_id = match.group(4)
+                        str_acc = clean_number(match.group(6))
+                        reach_pct = clean_number(match.group(7)) / 100.0
+                        hours = clean_number(match.group(8))
+                        
+                        # Armamos el registro para enviar a Airtable
+                        record = {
+                            "Date": date,
+                            "Market": market,
+                            "PROGRAMID": [program_id], # Enviado como lista para enlazar en Airtable
+                            "Streaming_Accounts": str_acc,
+                            "Hours_Streamed": hours,
+                            "Reach_Percent": reach_pct
+                        }
+                        airtable_records.append(record)
+                        
     if airtable_records:
+        # Opcional: Filtrar duplicados locales antes de subir
+        print(f"Total de registros de shows extraídos: {len(airtable_records)}")
         upload_to_airtable(airtable_records)
     else:
-        print("No se encontraron registros válidos para procesar.")
+        print("No se encontraron registros de shows con IDs válidos en los PDFs.")
 
 if __name__ == "__main__":
-    process_daily_data()
+    process_pdf_files()
