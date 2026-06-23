@@ -48,6 +48,8 @@ export default function Admin() {
     <div className="min-h-screen bg-slate-50 flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8 font-sans">
       <Head>
         <title>Ingesta de Métricas - Dashboard</title>
+        {/* Cargador directo de Tailwind para asegurar el diseño */}
+        <script src="https://cdn.tailwindcss.com"></script>
       </Head>
 
       <div className="max-w-xl w-full mx-auto bg-white p-8 rounded-2xl shadow-md border border-slate-100">
@@ -89,7 +91,7 @@ export default function Admin() {
         {debugText && (
           <div className="mt-6 p-4 bg-slate-900 text-slate-100 rounded-lg text-xs font-mono overflow-x-auto border border-slate-800">
             <h3 className="font-bold text-slate-400 mb-2 uppercase tracking-wide">
-              Texto extraído para diagnóstico (Primeras líneas):
+              Texto extraído para diagnóstico:
             </h3>
             <pre className="whitespace-pre-wrap">{debugText}</pre>
           </div>
